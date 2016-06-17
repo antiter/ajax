@@ -1,0 +1,206 @@
+/**
+ * var subAjax = require("subAjax");
+ * 默认都是不使用本地缓存，，如果需要缓存增加localCache：true即可。retry：true，代表超时重试,retryCount重试次数,默认一次
+ * 默认缓存时间是5分钟，如需调整则设置参数值：
+ * lifetime：10
+ * 即可（10分钟）
+ * jsonp请求,
+ * 不需要缓存：
+ * subAjax.load({
+ *     url: '',
+ *     data: {},
+ *     localCache:false,
+ *     retry:true,
+ *     retryCount:1
+ *     dataType: 'jsonp',
+ *     success: function(data){},
+ *     error: function(ret){} //ret: timeout|load|error
+ * }).
+ * 需要缓存,且使用localStorage，有效时间15分钟：
+ * subAjax.load({
+ *     url: '',
+ *     data: {},
+ *     localCache:"localStorage"
+ *     localCache：true，
+ *     dataType: 'jsonp',
+ *     lifetime：15
+ *     success: function(data){},
+ *     error: function(ret){} //ret: timeout|load|error
+ * }).
+ * 需要缓存，默认使用sessionStorage：
+ * ajax请求：
+ * subAjax.load({
+ *     url: '',
+ *     data: {},
+ *     localCache：true,
+ *     success: function(data){},
+ *     error: function(ret){} //ret: timeout 超时，默认6s|parsererror 返回数据解析失败|status xmlHttpRequest状态码 返回 0 有可能是 302 404
+ * })
+ *
+ * jsonp请求：
+ * subAjax.load({
+ *     url: '',
+ *     data: {},
+ *     dataType: 'jsonp',
+ *     success: function(data){},
+ *     error: function(ret){} //ret: timeout|load|error
+ * })
+ * 继承ajax组件，拥有和ajax一样的方法。
+ * 当前是重写了load方法。默认是不缓存到本地的。只缓存get请求
+ *
+ */
+"use strict";
+//sessionStorage
+(function(global) {
+    var ls = null;
+    if (typeof sessionStorage !== 'undefined') {
+        ls = sessionStorage;
+    }
+    /**
+     * 重写ajax的load，做判断是否需要缓存
+     * @param options
+     */
+    global.subLoad = function(options) {
+            if (!options) return false;
+            //有localCache为true 缓存
+            if (options.localCache !== true) {
+                retryAjax(options);
+                return;
+            }
+            if (options.localCache == "localStorage") {
+                if (typeof localStorage !== 'undefined') {
+                    ls = localStorage;
+                }
+            }
+
+            //post请求不缓存
+            if (options.type && options.type.toLowerCase == "post") {
+                ajax.load(options);
+                return;
+            }
+            if (!options.url) {
+                options.error && options.error("url null");
+                return;
+            }
+            var url = options.url.replace(/^(http(s)?:)?\/\//, "");
+            var key = options.cacheKey ? options.cacheKey : url + (options.data ? "|" + JSON.stringify(options.data) : "");
+            var localdata = getLocalItem(key);
+            if (!localdata) { //不存在本地
+                var suc = options.success;
+                options.success = function(datas, status) {
+                    //errCode==0  或 iRet=0  或者返回的是直接数组
+                    if ((datas && (datas.errCode == 0 || datas.iRet == 0)) || (typeof datas.iRet == "undefined" && typeof datas.errCode == "undefined" && datas.length > 0)) {
+                        setLocalItem(key, datas, options.cachetime);
+                    }
+                    suc && suc(datas, status);
+
+                };
+                retryAjax(options);
+                return;
+            }
+            var def = baseCacheDeferred(localdata);
+            //获取本地成功
+            def.then(function(data) {
+                //回调成功结果
+                console.log("回调成功结果");
+                options.success && options.success(data);
+                return;
+            }, function(data) {
+                //回调失败结果
+                console.log("回调失败结果");
+                options.error && options.error(data);
+            });
+        }
+        /**
+         * 重试请求
+         * @param options
+         */
+    function retryAjax(options) {
+        //默认不需要重试  retry设置为非true
+        if (!(options.retry == true)) {
+            global.ajax.load(options);
+            return;
+        }
+        //需要重试
+        var err = options.error;
+        var retryCount = options.retryCount || 1;
+        options.error = function(ret) {
+            console.log("subAjax error," + ret + "," + retryCount);
+            if ((ret == "timeout" || ret == "error") && retryCount > 0) {
+                retryCount--;
+                delete options.g_tk;
+                delete options.g_ty;
+                delete options._;
+                global.ajax(options);
+            } else {
+                err && err("retry error:" + ret);
+            }
+        }
+        global.ajax(options);
+    }
+
+    /**
+     * 基础的deferred函数
+     * @param cacheData 来自localstore的数据
+     * @returns
+     */
+    var baseCacheDeferred = function(cacheData) {
+
+        var defer = {};
+        defer.then = function(suc, error) {
+            setTimeout(function() {
+                suc(cacheData);
+            }, 1);
+        };
+        return defer;
+    };
+    /**
+     * 保存到本地
+     * @param key
+     * @param value
+     * @param lifetime
+     * @returns {boolean}
+     */
+    var setLocalItem = function(key, value, lifetime) {
+        if (!ls) return false;
+
+        var time = new Date();
+        if (typeof lifetime === 'undefined') lifetime = 5; //默认是5分钟
+        lifetime = lifetime * 60 * 1000;
+        ls.setItem(key, JSON.stringify(value));
+        ls.setItem('ajax_t_' + key, time.getTime());
+        ls.setItem('ajax_lt_' + key, lifetime);
+        return true;
+    };
+    /**
+     * 读取数据
+     * @param key
+     * @returns {*}
+     */
+    var getLocalItem = function(key) {
+        if (!ls) return false;
+        var time = new Date();
+        if (time.getTime() - ls.getItem('ajax_t_' + key) > ls.getItem('ajax_lt_' + key)) {
+            removeLocalItem(key);
+            return null;
+        }
+        try {
+            return JSON.parse(ls.getItem(key));
+        } catch (e) {
+            console.log(e);
+            return null;
+        }
+    };
+    /**
+     * 清除指定key的值
+     * @param key
+     * @returns {boolean}
+     */
+    var removeLocalItem = function(key) {
+        if (!ls) return false;
+        ls.removeItem(key);
+        ls.removeItem('ajax_t_' + key);
+        ls.removeItem('ajax_lt_' + key);
+        return true;
+    };
+}(this));
