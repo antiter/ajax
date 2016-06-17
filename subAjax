@@ -1,5 +1,4 @@
 /**
- * var subAjax = require("subAjax");
  * 默认都是不使用本地缓存，，如果需要缓存增加localCache：true即可。retry：true，代表超时重试,retryCount重试次数,默认一次
  * 默认缓存时间是5分钟，如需调整则设置参数值：
  * lifetime：10
